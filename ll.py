@@ -1,7 +1,13 @@
 #!/usr/bin/env python
 
 import lldb
+import struct
 import pdb
+try:
+	from termcolor import colored
+except:
+	print "ERROR: Could not load termcolor. Please type 'sudo easy_install termcolor'"
+	exit(1)
 
 arch = 'x86'
 
@@ -13,24 +19,56 @@ REGISTERS['x86_64'] = ("rax", "rbx", "rcx", "rdx", "rdi", "rsi", "rbp", "rsp",
 						"dx", "di", "si", "bp", "sp", "ah", "bh", "ch", "dh", 
 						"al", "bl", "cl", "dl", "dil", "sil", "bpl", "spl",)
 
-def get_registers(debugger):
-	target = debugger.GetTargetAtIndex(0)
-	process = target.process
 
-	state = process.GetState()
-	if state == lldb.eStateStopped:
-		thread = process.GetSelectedThread()
-		frame = thread.GetFrameAtIndex(0)
+# Get Address Color
+def GAC(process, addr):
+	global arch
 
-		registers = frame.GetRegisters()
+	if arch == 'x86' or arch == 'arm':
+		width = 4
+		a = "%08x" % (addr, )
+	else:
+		width = 8
+		a = "%016x" % (addr, )
 
-		gp = list(registers[0])
+	aa = "0x" + a
+	address_bytes = [int(a[i:i+2], 16) for i in xrange(0, len(a), 2)]
+	all_ascii = map(lambda x: x > 0x20 and x <= 0x7f, address_bytes)
 
-		rv = {}
-		for i in xrange(len(gp)):
-			rv[gp[i].GetName()] = int(gp[i].GetValue(), 0)
+	address_words = [int(a[i:i+4], 16) for i in xrange(0, len(a), 4)]
+	all_unicode = map(lambda x: x > 0x20 and x <= 0xff, address_words)
 
-		return rv
+	# Check to see if the address is all ascii values or looks unicode-ish
+	if all(all_unicode) or all(all_ascii):
+		return colored(aa, 'red')
+
+	error = lldb.SBError()
+	bytes_read = process.ReadMemory(addr, width, error)
+	if not error.Success():
+		return aa
+
+	br = struct.unpack("B" * width, bytes_read)
+	br_all_ascii = map(lambda x: x > 0x20 and x <= 0x7f, br)
+
+	br_u = struct.unpack("H" * (width / 2), bytes_read)
+	br_all_unicode = map(lambda x: x > 0x20 and x <= 0xff, br_u)
+
+	if all(br_all_ascii) or all(br_all_unicode):
+		return colored(aa, 'yellow')
+
+	return colored(aa, 'grey')
+
+
+def get_registers(frame):
+	registers = frame.GetRegisters()
+
+	gp = list(registers[0])
+
+	rv = {}
+	for i in xrange(len(gp)):
+		rv[gp[i].GetName()] = int(gp[i].GetValue(), 0)
+
+	return rv
 
 
 def hook_stop(debugger, command, result, internal_dict):
@@ -47,12 +85,13 @@ def hook_stop(debugger, command, result, internal_dict):
 
 	target = debugger.GetTargetAtIndex(0)
 	process = target.process
+	p = process
 	state = process.GetState()
 
 	thread = process.GetThreadAtIndex(0)
 	frame = thread.GetFrameAtIndex(0)
 
-	r = get_registers(debugger)
+	r = get_registers(frame)
 
 	if arch == 'x86_64':
 		flags  = "O " if (r['rflags'] >> 0xb) & 1 else "o "
@@ -66,16 +105,38 @@ def hook_stop(debugger, command, result, internal_dict):
 		flags += "C " if (r['rflags'] >> 0x3) & 1 else "c "
 
 		out  = "-" * 120 + "\n"
-		out += "  rax:0x%016x  rbx:0x%016x  rcx:0x%016x  rdx:0x%016x  %s\n" % (r['rax'], r['rbx'], r['rcx'], r['rdx'], flags, )
-		out += "  rsi:0x%016x  rdi:0x%016x  rsp:0x%016x  rbp:0x%016x  rip:0x%016x\n" % (r['rsi'], r['rdi'], r['rsp'], r['rbp'], r['rip'], )
+		out += "  rax:%s  rbx:%s  rcx:%s  rdx:%s  %s\n" % (
+				GAC(p, r['rax']), 
+				GAC(p, r['rbx']), 
+				GAC(p, r['rcx']), 
+				GAC(p, r['rdx']), 
+				flags, )
+
+		out += "  rsi:%s  rdi:%s   r8:%s   r9:%s  r10:%s\n" % (
+				GAC(p, r['rsi']),
+				GAC(p, r['rdi']),
+				GAC(p, r['r8']),
+				GAC(p, r['r9']),
+				GAC(p, r['r10']), )
+
+		out += "  r11:%s  r12:%s  r13:%s  r14:%s  r15:%s\n" % (
+				GAC(p, r['r11']),
+				GAC(p, r['r12']),
+				GAC(p, r['r13']),
+				GAC(p, r['r14']),
+				GAC(p, r['r15']), )
+
+		out += "  rsp:%s  rbp:%s  rip:%s\n" % (
+				GAC(p, r['rsp']), 
+				GAC(p, r['rbp']), 
+				GAC(p, r['rip']), )
+
 		out += "-" * 120 + "\n"
 
 		print
 		print out
 
 		lldb.debugger.HandleCommand('disass -s `$rip` -c 5')
-
-		print "%016x" % (frame.GetPC(), )
 
 def get_info(debugger):
 	global arch, got_info
