@@ -149,70 +149,80 @@ def dump_memory(debugger, width, command):
 		return
 
 	commands = command.split(' ')
+
 	if len(commands) == 2:
 		bytes_to_display = int(commands[1], 16)
-		start_address = int(commands[0], 16)
+		start_address = commands[0]
 	elif len(commands) == 1:
 		bytes_to_display = 0x80
-		start_address = int(commands[0], 16)
+		start_address = commands[0]
 	else:
 		print "db/dw/dd/dq [start address] [bytes to display]"
 		return
 
-	data = []
-	ascii_bytes = []
+	try:
+		start_address = int(start_address, 16)
+	except:
+		# try a register lookup
+		state = process.GetState()
+		thread = process.GetThreadAtIndex(0)
+		frame = thread.GetFrameAtIndex(0)
+		r = get_registers(frame)
+
+		start_address = r[start_address.replace('$', '').replace('%', '')]
+
 
 	if width == 1: 
 		width_fmt = "B"
-		data_fmt = "0x%02x"
+		data_fmt = "%02x"
 	elif width == 2: 
 		width_fmt = "H"
-		data_fmt = "0x%04x"
+		data_fmt = "%04x"
 	elif width == 4: 
 		width_fmt = "I"
-		data_fmt = "0x%08x"
+		data_fmt = "%08x"
 	elif width == 8: 
 		width_fmt = "L"
-		data_fmt = "0x%016x"
+		data_fmt = "%016x"
 
+	i = 0
 	error = lldb.SBError()
-	for i in xrange(0, bytes_to_display, width):
+	while i <= bytes_to_display:
+		if i % 16 == 0:	
+			addr_fmt = "%%0%ux" % (g_width * 2, )
+			out = "0x" + addr_fmt % (start_address + i, ) + " : "
+			ascii_line = ""
+
 		words_read = process.ReadMemory(start_address + i, width, error)
 		if error.Fail():
 			break
-		data.append(struct.unpack(width_fmt, words_read)[0])
 
-	out = ""
-	ascii_line = ""
-
-	i = 0
-	for x in data:
 		if width == g_width:
-			out += GAC(process, x)
+			out += GAC(process, struct.unpack(width_fmt, words_read)[0], )
 		else:
-			out += data_fmt % (x, )
+			out += data_fmt % (struct.unpack(width_fmt, words_read)[0], )
 
-		ascii_word = data_fmt[2:] % (x, )
-		for x in ascii_word.decode('hex')[::-1]:
-			if ord(x) >= ord(' ') and ord(x) <= ord('z'):
-				ascii_line += x
+		for j in xrange(width):
+			ascii_byte = process.ReadMemory(start_address + i + j, 1, error)
+
+			if ord(ascii_byte) >= ord(' ') and ord(ascii_byte) <= ord('z'):
+				ascii_line += ascii_byte
 			else:
 				ascii_line += '.'
 
 		i += width
-		out += ' '
 
-		if i == 0x10:
-			i = 0
+		if i % 16 == 4 or i % 16 == 12:
+			out += "  "
+		elif i % 16 == 8:
+			out += "  "
+		else:
+			out += ' '
 
-			out += '   '
-			out += ascii_line
-			out += '\n'
+		if i % 16 == 0:
+			print out + " " + ascii_line
 
-			ascii_line = ""
 
-	print out
-		
 	if error.Fail():
 		print "ERROR: Address not mapped"
 	
